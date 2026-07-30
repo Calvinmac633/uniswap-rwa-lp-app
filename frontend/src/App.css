@@ -57,3 +57,48 @@ h1 {
 .result .error {
   color: #c0392b;
 }
+
+.position-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  text-align: left;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.position-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #eee;
+  font-size: 14px;
+}
+
+.position-row:last-child {
+  border-bottom: none;
+}
+
+.position-row .pair {
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.protocol-badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #666;
+  background: #f0f0f0;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.position-row .detail {
+  color: var(--text-muted, #666);
+  font-size: 13px;
+}

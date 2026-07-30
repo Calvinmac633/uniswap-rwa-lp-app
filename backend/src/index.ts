@@ -2,7 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import { isAddress, type Address } from "viem";
-import { getOpenPositionCount } from "./chain.js";
+import { getOpenPositions } from "./chain.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -19,11 +19,11 @@ app.get("/api/positions/:address", async (req, res) => {
   }
 
   try {
-    const count = await getOpenPositionCount(address as Address);
-    res.json({ address, count });
+    const positions = await getOpenPositions(address as Address);
+    res.json({ address, count: positions.length, positions });
   } catch (err) {
     console.error(err);
-    res.status(502).json({ error: "Failed to read position count from chain" });
+    res.status(502).json({ error: "Failed to read positions from chain" });
   }
 });
 
