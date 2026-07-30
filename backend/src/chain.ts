@@ -19,8 +19,10 @@ if (!isAddress(POSITION_MANAGER_ADDRESS) || !isAddress(V4_POSITION_MANAGER_ADDRE
   throw new Error("POSITION_MANAGER_ADDRESS / V4_POSITION_MANAGER_ADDRESS is not a valid address");
 }
 
+export const CHAIN_ID_NUMBER = Number(CHAIN_ID);
+
 const robinhoodChain = {
-  id: Number(CHAIN_ID),
+  id: CHAIN_ID_NUMBER,
   name: "Robinhood Chain",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: {
