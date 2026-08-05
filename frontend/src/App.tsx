@@ -59,14 +59,18 @@ function App() {
     setPositions([]);
     localStorage.setItem(LAST_ADDRESS_KEY, address.trim());
 
+    console.log(`[positions] fetching for ${address.trim()}`);
+
     try {
       const res = await fetch(`${API_BASE}/api/positions/${address.trim()}`);
       const data = await res.json();
 
       if (!res.ok) {
+        console.error("[positions] request failed:", data);
         throw new Error(data.error ?? "Something went wrong");
       }
 
+      console.log(`[positions] ${data.count} position(s) received:`, data.positions);
       setCount(data.count);
       setPositions(data.positions ?? []);
       setStatus("success");

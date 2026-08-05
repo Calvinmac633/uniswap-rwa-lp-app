@@ -1,4 +1,5 @@
 import { CHAIN_ID_NUMBER } from "./chain.js";
+import { log } from "./logger.js";
 
 const ASSETS_API_URL = "https://api.robinhood.com/rhj/assets";
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -14,6 +15,7 @@ type RobinhoodAssetsResponse = { assets: RobinhoodAsset[] };
 let cache: { addresses: Set<string>; fetchedAt: number } | null = null;
 
 async function fetchStockTokenAddresses(): Promise<Set<string>> {
+  log("stockTokens", `fetching ${ASSETS_API_URL}`);
   const res = await fetch(ASSETS_API_URL);
   if (!res.ok) {
     throw new Error(`Robinhood assets API returned ${res.status}`);
@@ -31,6 +33,7 @@ async function fetchStockTokenAddresses(): Promise<Set<string>> {
     }
   }
 
+  log("stockTokens", `loaded ${addresses.size} active stock token address(es) (of ${data.assets.length} total assets)`);
   return addresses;
 }
 
@@ -39,6 +42,7 @@ async function fetchStockTokenAddresses(): Promise<Set<string>> {
 // than that for a personal-use app and keeps us well under any rate limit.
 export async function getStockTokenAddresses(): Promise<Set<string>> {
   if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
+    log("stockTokens", `using cached registry (${cache.addresses.size} addresses)`);
     return cache.addresses;
   }
 

@@ -11,6 +11,7 @@ import {
   type Hex,
 } from "viem";
 import { currentDisplayPrice, tickDisplayPrice, getAmountsForLiquidity } from "./uniswapMath.js";
+import { log } from "./logger.js";
 
 const RPC_URL = process.env.ROBINHOOD_RPC_URL;
 const CHAIN_ID = process.env.ROBINHOOD_CHAIN_ID;
@@ -330,6 +331,7 @@ async function getOpenV3Positions(walletAddress: Address): Promise<OpenPosition[
   });
 
   const total = Number(balance);
+  log("chain:v3", `${walletAddress} holds ${total} v3 position NFT(s)`);
   if (total === 0) return [];
 
   const tokenIds = await Promise.all(
@@ -360,6 +362,7 @@ async function getOpenV3Positions(walletAddress: Address): Promise<OpenPosition[
   const open = tokenIds
     .map((tokenId, i) => ({ tokenId, position: positions[i] }))
     .filter(({ position }) => position[7] > 0n);
+  log("chain:v3", `${open.length}/${total} have nonzero liquidity (open)`);
 
   const poolAddresses = await Promise.all(
     open.map(({ position }) =>
@@ -419,7 +422,11 @@ async function getOpenV4Positions(walletAddress: Address): Promise<OpenPosition[
     toBlock: "latest",
   });
 
-  const candidateTokenIds = [...new Set(incomingTransfers.map((log) => log.args.tokenId!))];
+  const candidateTokenIds = [...new Set(incomingTransfers.map((entry) => entry.args.tokenId!))];
+  log(
+    "chain:v4",
+    `${walletAddress}: ${incomingTransfers.length} incoming transfer(s), ${candidateTokenIds.length} distinct token ID(s)`
+  );
   if (candidateTokenIds.length === 0) return [];
 
   const owners = await Promise.all(
@@ -434,6 +441,7 @@ async function getOpenV4Positions(walletAddress: Address): Promise<OpenPosition[
   );
 
   const ownedTokenIds = candidateTokenIds.filter((_, i) => isAddressEqual(owners[i], walletAddress));
+  log("chain:v4", `${ownedTokenIds.length}/${candidateTokenIds.length} still currently owned`);
   if (ownedTokenIds.length === 0) return [];
 
   const [liquidities, poolInfos] = await Promise.all([
@@ -467,6 +475,7 @@ async function getOpenV4Positions(walletAddress: Address): Promise<OpenPosition[
       ...decodeV4PositionInfo(poolInfos[i][1]),
     }))
     .filter(({ liquidity }) => liquidity > 0n);
+  log("chain:v4", `${open.length}/${ownedTokenIds.length} have nonzero liquidity (open)`);
 
   const poolIds = open.map(({ poolKey }) => computeV4PoolId(poolKey));
 
