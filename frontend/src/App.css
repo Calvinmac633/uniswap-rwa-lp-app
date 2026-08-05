@@ -1,5 +1,5 @@
 .page {
-  max-width: 480px;
+  max-width: 560px;
   margin: 80px auto;
   padding: 0 24px;
   text-align: center;
@@ -54,6 +54,11 @@ h1 {
   font-weight: 600;
 }
 
+.result .count .total-value {
+  color: var(--text-muted, #666);
+  font-weight: 500;
+}
+
 .result .error {
   color: #c0392b;
 }
@@ -69,9 +74,6 @@ h1 {
 }
 
 .position-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   padding: 10px 14px;
   border-bottom: 1px solid #eee;
   font-size: 14px;
@@ -81,11 +83,28 @@ h1 {
   border-bottom: none;
 }
 
+.position-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.position-row-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+
 .position-row .pair {
   font-weight: 600;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.position-row .value {
+  font-weight: 600;
 }
 
 .protocol-badge {
@@ -98,7 +117,22 @@ h1 {
   padding: 1px 5px;
 }
 
+.range-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.range-dot.in-range {
+  background: #1a9c4b;
+}
+
+.range-dot.out-of-range {
+  background: #c0392b;
+}
+
 .position-row .detail {
   color: var(--text-muted, #666);
-  font-size: 13px;
+  font-size: 12px;
 }

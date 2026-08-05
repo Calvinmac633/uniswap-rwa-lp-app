@@ -1,22 +1,42 @@
-import { createPublicClient, http, isAddress, isAddressEqual, parseAbiItem, zeroAddress, type Address } from "viem";
+import {
+  createPublicClient,
+  http,
+  isAddress,
+  isAddressEqual,
+  parseAbiItem,
+  encodeAbiParameters,
+  keccak256,
+  zeroAddress,
+  type Address,
+  type Hex,
+} from "viem";
+import { currentDisplayPrice, tickDisplayPrice, getAmountsForLiquidity } from "./uniswapMath.js";
 
 const RPC_URL = process.env.ROBINHOOD_RPC_URL;
 const CHAIN_ID = process.env.ROBINHOOD_CHAIN_ID;
-const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS as
-  | Address
-  | undefined;
-const V4_POSITION_MANAGER_ADDRESS = process.env.V4_POSITION_MANAGER_ADDRESS as
-  | Address
-  | undefined;
+const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS as Address | undefined;
+const V4_POSITION_MANAGER_ADDRESS = process.env.V4_POSITION_MANAGER_ADDRESS as Address | undefined;
+const V3_FACTORY_ADDRESS = process.env.V3_FACTORY_ADDRESS as Address | undefined;
+const V4_STATE_VIEW_ADDRESS = process.env.V4_STATE_VIEW_ADDRESS as Address | undefined;
 
-if (!RPC_URL || !CHAIN_ID || !POSITION_MANAGER_ADDRESS || !V4_POSITION_MANAGER_ADDRESS) {
+const REQUIRED_ADDRESSES = {
+  POSITION_MANAGER_ADDRESS,
+  V4_POSITION_MANAGER_ADDRESS,
+  V3_FACTORY_ADDRESS,
+  V4_STATE_VIEW_ADDRESS,
+};
+
+if (!RPC_URL || !CHAIN_ID || Object.values(REQUIRED_ADDRESSES).some((v) => !v)) {
   throw new Error(
-    "Missing chain config. Set ROBINHOOD_RPC_URL, ROBINHOOD_CHAIN_ID, POSITION_MANAGER_ADDRESS, and V4_POSITION_MANAGER_ADDRESS in backend/.env"
+    "Missing chain config. Set ROBINHOOD_RPC_URL, ROBINHOOD_CHAIN_ID, POSITION_MANAGER_ADDRESS, " +
+      "V4_POSITION_MANAGER_ADDRESS, V3_FACTORY_ADDRESS, and V4_STATE_VIEW_ADDRESS in backend/.env"
   );
 }
 
-if (!isAddress(POSITION_MANAGER_ADDRESS) || !isAddress(V4_POSITION_MANAGER_ADDRESS)) {
-  throw new Error("POSITION_MANAGER_ADDRESS / V4_POSITION_MANAGER_ADDRESS is not a valid address");
+for (const [name, value] of Object.entries(REQUIRED_ADDRESSES)) {
+  if (!isAddress(value as string)) {
+    throw new Error(`${name} is not a valid address`);
+  }
 }
 
 export const CHAIN_ID_NUMBER = Number(CHAIN_ID);
@@ -120,13 +140,67 @@ const V4_TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
 );
 
-const ERC20_SYMBOL_ABI = [
+const V3_FACTORY_ABI = [
+  {
+    type: "function",
+    name: "getPool",
+    stateMutability: "view",
+    inputs: [
+      { name: "tokenA", type: "address" },
+      { name: "tokenB", type: "address" },
+      { name: "fee", type: "uint24" },
+    ],
+    outputs: [{ name: "pool", type: "address" }],
+  },
+] as const;
+
+const V3_POOL_ABI = [
+  {
+    type: "function",
+    name: "slot0",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "sqrtPriceX96", type: "uint160" },
+      { name: "tick", type: "int24" },
+      { name: "observationIndex", type: "uint16" },
+      { name: "observationCardinality", type: "uint16" },
+      { name: "observationCardinalityNext", type: "uint16" },
+      { name: "feeProtocol", type: "uint8" },
+      { name: "unlocked", type: "bool" },
+    ],
+  },
+] as const;
+
+const V4_STATE_VIEW_ABI = [
+  {
+    type: "function",
+    name: "getSlot0",
+    stateMutability: "view",
+    inputs: [{ name: "poolId", type: "bytes32" }],
+    outputs: [
+      { name: "sqrtPriceX96", type: "uint160" },
+      { name: "tick", type: "int24" },
+      { name: "protocolFee", type: "uint24" },
+      { name: "lpFee", type: "uint24" },
+    ],
+  },
+] as const;
+
+const ERC20_ABI = [
   {
     type: "function",
     name: "symbol",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "string" }],
+  },
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
   },
 ] as const;
 
@@ -139,20 +213,112 @@ export type OpenPosition = {
   symbol1: string;
   fee: number;
   liquidity: string;
+  amount0: number;
+  amount1: number;
+  currentPrice: number; // token1 per token0, decimal-adjusted
+  priceLower: number; // token1 per token0, decimal-adjusted
+  priceUpper: number; // token1 per token0, decimal-adjusted
+  inRange: boolean;
 };
 
-async function getTokenSymbol(tokenAddress: Address): Promise<string> {
-  if (isAddressEqual(tokenAddress, zeroAddress)) return "ETH";
+type TokenMeta = { symbol: string; decimals: number };
 
-  try {
-    return await publicClient.readContract({
-      address: tokenAddress,
-      abi: ERC20_SYMBOL_ABI,
-      functionName: "symbol",
-    });
-  } catch {
-    return tokenAddress.slice(0, 6) + "…";
+// Token metadata never changes, so cache it across positions and requests.
+const tokenMetaCache = new Map<string, Promise<TokenMeta>>();
+
+async function getTokenMeta(tokenAddress: Address): Promise<TokenMeta> {
+  if (isAddressEqual(tokenAddress, zeroAddress)) {
+    return { symbol: "ETH", decimals: 18 };
   }
+
+  const key = tokenAddress.toLowerCase();
+  let cached = tokenMetaCache.get(key);
+  if (!cached) {
+    cached = (async () => {
+      try {
+        const [symbol, decimals] = await Promise.all([
+          publicClient.readContract({ address: tokenAddress, abi: ERC20_ABI, functionName: "symbol" }),
+          publicClient.readContract({ address: tokenAddress, abi: ERC20_ABI, functionName: "decimals" }),
+        ]);
+        return { symbol, decimals };
+      } catch {
+        return { symbol: tokenAddress.slice(0, 6) + "…", decimals: 18 };
+      }
+    })();
+    tokenMetaCache.set(key, cached);
+  }
+  return cached;
+}
+
+function toInt24(packed: bigint): number {
+  const v = Number(packed & 0xffffffn);
+  return v >= 0x800000 ? v - 0x1000000 : v;
+}
+
+// v4's PositionInfo is a packed uint256: [200 bits poolId | 24 bits tickUpper | 24 bits tickLower | 8 bits flag]
+function decodeV4PositionInfo(info: bigint): { tickLower: number; tickUpper: number } {
+  return {
+    tickLower: toInt24(info >> 8n),
+    tickUpper: toInt24(info >> 32n),
+  };
+}
+
+function computeV4PoolId(poolKey: {
+  currency0: Address;
+  currency1: Address;
+  fee: number;
+  tickSpacing: number;
+  hooks: Address;
+}): Hex {
+  const encoded = encodeAbiParameters(
+    [
+      { type: "address" },
+      { type: "address" },
+      { type: "uint24" },
+      { type: "int24" },
+      { type: "address" },
+    ],
+    [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks]
+  );
+  return keccak256(encoded);
+}
+
+type PricedPosition = {
+  amount0: number;
+  amount1: number;
+  currentPrice: number;
+  priceLower: number;
+  priceUpper: number;
+  inRange: boolean;
+};
+
+function priceV3Or4Position(
+  liquidity: bigint,
+  sqrtPriceX96: bigint,
+  currentTick: number,
+  tickLower: number,
+  tickUpper: number,
+  decimals0: number,
+  decimals1: number
+): PricedPosition {
+  const { amount0, amount1 } = getAmountsForLiquidity({
+    liquidity,
+    sqrtPriceX96,
+    currentTick,
+    tickLower,
+    tickUpper,
+    decimals0,
+    decimals1,
+  });
+
+  return {
+    amount0,
+    amount1,
+    currentPrice: currentDisplayPrice(sqrtPriceX96, decimals0, decimals1),
+    priceLower: tickDisplayPrice(tickLower, decimals0, decimals1),
+    priceUpper: tickDisplayPrice(tickUpper, decimals0, decimals1),
+    inRange: currentTick >= tickLower && currentTick < tickUpper,
+  };
 }
 
 async function getOpenV3Positions(walletAddress: Address): Promise<OpenPosition[]> {
@@ -195,22 +361,47 @@ async function getOpenV3Positions(walletAddress: Address): Promise<OpenPosition[
     .map((tokenId, i) => ({ tokenId, position: positions[i] }))
     .filter(({ position }) => position[7] > 0n);
 
+  const poolAddresses = await Promise.all(
+    open.map(({ position }) =>
+      publicClient.readContract({
+        address: V3_FACTORY_ADDRESS as Address,
+        abi: V3_FACTORY_ABI,
+        functionName: "getPool",
+        args: [position[2], position[3], position[4]],
+      })
+    )
+  );
+
+  const slot0s = await Promise.all(
+    poolAddresses.map((poolAddress) =>
+      publicClient.readContract({ address: poolAddress, abi: V3_POOL_ABI, functionName: "slot0" })
+    )
+  );
+
   return Promise.all(
-    open.map(async ({ tokenId, position }) => {
-      const [symbol0, symbol1] = await Promise.all([
-        getTokenSymbol(position[2]),
-        getTokenSymbol(position[3]),
-      ]);
+    open.map(async ({ tokenId, position }, i) => {
+      const [meta0, meta1] = await Promise.all([getTokenMeta(position[2]), getTokenMeta(position[3])]);
+      const [sqrtPriceX96, currentTick] = slot0s[i];
+      const priced = priceV3Or4Position(
+        position[7],
+        sqrtPriceX96,
+        currentTick,
+        position[5],
+        position[6],
+        meta0.decimals,
+        meta1.decimals
+      );
 
       return {
         tokenId: tokenId.toString(),
         protocol: "v3" as const,
         token0: position[2],
         token1: position[3],
-        symbol0,
-        symbol1,
+        symbol0: meta0.symbol,
+        symbol1: meta1.symbol,
         fee: position[4],
         liquidity: position[7].toString(),
+        ...priced,
       };
     })
   );
@@ -242,9 +433,7 @@ async function getOpenV4Positions(walletAddress: Address): Promise<OpenPosition[
     )
   );
 
-  const ownedTokenIds = candidateTokenIds.filter((_, i) =>
-    isAddressEqual(owners[i], walletAddress)
-  );
+  const ownedTokenIds = candidateTokenIds.filter((_, i) => isAddressEqual(owners[i], walletAddress));
   if (ownedTokenIds.length === 0) return [];
 
   const [liquidities, poolInfos] = await Promise.all([
@@ -271,25 +460,54 @@ async function getOpenV4Positions(walletAddress: Address): Promise<OpenPosition[
   ]);
 
   const open = ownedTokenIds
-    .map((tokenId, i) => ({ tokenId, liquidity: liquidities[i], poolKey: poolInfos[i][0] }))
+    .map((tokenId, i) => ({
+      tokenId,
+      liquidity: liquidities[i],
+      poolKey: poolInfos[i][0],
+      ...decodeV4PositionInfo(poolInfos[i][1]),
+    }))
     .filter(({ liquidity }) => liquidity > 0n);
 
+  const poolIds = open.map(({ poolKey }) => computeV4PoolId(poolKey));
+
+  const slot0s = await Promise.all(
+    poolIds.map((poolId) =>
+      publicClient.readContract({
+        address: V4_STATE_VIEW_ADDRESS as Address,
+        abi: V4_STATE_VIEW_ABI,
+        functionName: "getSlot0",
+        args: [poolId],
+      })
+    )
+  );
+
   return Promise.all(
-    open.map(async ({ tokenId, liquidity, poolKey }) => {
-      const [symbol0, symbol1] = await Promise.all([
-        getTokenSymbol(poolKey.currency0),
-        getTokenSymbol(poolKey.currency1),
+    open.map(async ({ tokenId, liquidity, poolKey, tickLower, tickUpper }, i) => {
+      const [meta0, meta1] = await Promise.all([
+        getTokenMeta(poolKey.currency0),
+        getTokenMeta(poolKey.currency1),
       ]);
+      const [sqrtPriceX96, currentTick] = slot0s[i];
+      const priced = priceV3Or4Position(
+        liquidity,
+        sqrtPriceX96,
+        currentTick,
+        tickLower,
+        tickUpper,
+        meta0.decimals,
+        meta1.decimals
+      );
 
       return {
         tokenId: tokenId.toString(),
         protocol: "v4" as const,
         token0: poolKey.currency0,
         token1: poolKey.currency1,
-        symbol0,
-        symbol1,
+        symbol0: meta0.symbol,
+        symbol1: meta1.symbol,
         fee: poolKey.fee,
         liquidity: liquidity.toString(),
+        ...priced,
       };
     })
   );

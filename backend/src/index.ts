@@ -4,6 +4,7 @@ import express from "express";
 import { isAddress, type Address } from "viem";
 import { getOpenPositions } from "./chain.js";
 import { getStockTokenAddresses } from "./stockTokens.js";
+import { getPositionValue } from "./pricing.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -25,11 +26,13 @@ app.get("/api/positions/:address", async (req, res) => {
       getStockTokenAddresses(),
     ]);
 
-    const stockPositions = positions.filter(
-      (p) =>
-        stockTokenAddresses.has(p.token0.toLowerCase()) ||
-        stockTokenAddresses.has(p.token1.toLowerCase())
-    );
+    const stockPositions = positions
+      .filter(
+        (p) =>
+          stockTokenAddresses.has(p.token0.toLowerCase()) ||
+          stockTokenAddresses.has(p.token1.toLowerCase())
+      )
+      .map((p) => ({ ...p, ...getPositionValue(p) }));
 
     res.json({ address, count: stockPositions.length, positions: stockPositions });
   } catch (err) {
